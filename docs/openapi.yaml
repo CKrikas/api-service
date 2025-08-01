@@ -1,0 +1,10 @@
+paths:
+  /citizens/{id}:
+    get:
+      summary: Get my profile
+  /applications:
+    post:
+      summary: Submit a new deferment/enlistment request
+  /applications/{id}/approve:
+    post:
+      summary: Officer approves an application
