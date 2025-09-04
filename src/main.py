@@ -1,10 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Query
+from .models import Status
+from .mailer import send_mail
 from pydantic_settings import BaseSettings
 from typing import List
 from .db import Base, engine, SessionLocal
 from .models import Citizen, Application, Status, AppType, Branch
 from .schemas import ApplicationCreate, ApplicationOut
+
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg://stratou:secret@db:5432/stratologia"
@@ -49,3 +53,52 @@ def create_application(payload: ApplicationCreate):
         return {"id": app_row.id, "status": app_row.status.value}
     finally:
         db.close()
+
+
+@app.get("/applications")
+def list_applications(status: Status | None = Query(None)):
+    db = SessionLocal()
+    try:
+        q = db.query(Application)
+        if status:
+            q = q.filter(Application.status == status)
+        rows = q.order_by(Application.submitted_at.desc()).limit(100).all()
+        return [
+            {
+                "id": r.id, "status": r.status.value, "type": r.type.value,
+                "desired_branch": r.desired_branch.value, "citizen_id": r.citizen_id
+            }
+            for r in rows
+        ]
+    finally: db.close()
+
+@app.post("/applications/{app_id}/approve")
+def approve_application(app_id: int):
+    db = SessionLocal()
+    try:
+        app_row = db.query(Application).get(app_id)
+        if not app_row:
+            raise HTTPException(404, "Not found")
+        app_row.status = Status.approved
+        db.commit()
+        # fake recipient from national id for demo
+        to = f"{app_row.citizen_id}@example.test"
+        send_mail(
+            to=to,
+            subject=f"Application #{app_row.id} approved",
+            body=f"Your application {app_row.id} has been approved. Branch: {app_row.desired_branch.value}"
+        )
+        return {"id": app_row.id, "status": app_row.status.value}
+    finally: db.close()
+
+@app.post("/applications/{app_id}/reject")
+def reject_application(app_id: int):
+    db = SessionLocal()
+    try:
+        app_row = db.query(Application).get(app_id)
+        if not app_row:
+            raise HTTPException(404, "Not found")
+        app_row.status = Status.rejected
+        db.commit()
+        return {"id": app_row.id, "status": app_row.status.value}
+    finally: db.close()
