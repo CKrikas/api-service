@@ -1,47 +1,34 @@
 pipeline {
   agent any
   environment {
-    IMAGE = "ghcr.io/CKrikas/api-service"
+    IMAGE = "ghcr.io/ckrikas/api-service"
   }
   stages {
     stage('Checkout') { steps { checkout scm } }
 
-    stage('Unit tests') {
-      when { expression { fileExists('package.json') || fileExists('pyproject.toml') } }
-      steps {
-        sh '''
-          if [ -f package.json ]; then echo "TODO: pnpm test (skipping)"; fi
-          if [ -f pyproject.toml ] || [ -f requirements.txt ]; then echo "TODO: pytest (skipping)"; fi
-        '''
-      }
-    }
-
-    stage('Build image') {
-      steps { sh 'docker build -t $IMAGE:$GIT_COMMIT -t $IMAGE:latest .' }
-    }
-
-    stage('Login GHCR') {
+    stage('Docker login') {
       steps {
         withCredentials([string(credentialsId: 'ghcr-token', variable: 'TOKEN')]) {
-          sh 'echo $TOKEN | docker login ghcr.io -u CKrikas --password-stdin'
+          sh 'echo $TOKEN | docker login ghcr.io -u ckrikas --password-stdin'
         }
       }
     }
 
-    stage('Push image') {
+    stage('Build & Push (buildx)') {
       steps {
         sh '''
-          docker push $IMAGE:$GIT_COMMIT
-          docker push $IMAGE:latest
+          set -e
+          docker buildx create --use --name builder || true
+          docker buildx build --platform linux/amd64 \
+            -t ${IMAGE}:${GIT_COMMIT} -t ${IMAGE}:latest \
+            --push .
         '''
       }
     }
 
-    stage('Notify/Deploy trigger') {
+    stage('Trigger deploy') {
       when { branch 'main' }
-      steps {
-        echo 'Images pushed. The infra pipeline (Ansible) will deploy.'
-      }
+      steps { build job: 'deploy-prod', wait: false }
     }
   }
   post { always { sh 'docker logout ghcr.io || true' } }
