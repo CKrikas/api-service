@@ -1,35 +1,46 @@
 pipeline {
   agent any
   environment {
-    IMAGE = "ghcr.io/ckrikas/api-service"
+    IMAGE = 'ghcr.io/ckrikas/api-service'
   }
   stages {
     stage('Checkout') { steps { checkout scm } }
 
     stage('Docker login') {
       steps {
-        withCredentials([string(credentialsId: 'ghcr-token', variable: 'TOKEN')]) {
+        withCredentials([string(credentialsId: 'ghcr_pat', variable: 'TOKEN')]) {
           sh 'echo $TOKEN | docker login ghcr.io -u ckrikas --password-stdin'
         }
       }
     }
 
-    stage('Build & Push (buildx)') {
+    stage('Build') {
+      steps {
+        script { env.TAG = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim() }
+        sh '''
+          set -e
+          docker build -t ${IMAGE}:${TAG} -t ${IMAGE}:latest .
+        '''
+      }
+    }
+
+    stage('Push') {
       steps {
         sh '''
           set -e
-          docker buildx create --use --name builder || true
-          docker buildx build --platform linux/amd64 \
-            -t ${IMAGE}:${GIT_COMMIT} -t ${IMAGE}:latest \
-            --push .
+          docker push ${IMAGE}:${TAG}
+          docker push ${IMAGE}:latest
         '''
       }
     }
 
     stage('Trigger deploy') {
-      when { branch 'main' }
+      when { expression { currentBuild.currentResult == 'SUCCESS' } }
       steps { build job: 'deploy-prod', wait: false }
     }
   }
-  post { always { sh 'docker logout ghcr.io || true' } }
+
+  post {
+    always { sh 'docker logout ghcr.io || true' }
+  }
 }
