@@ -1,36 +1,72 @@
+# src/main.py
+import json, os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Query
-from .models import Status
-from .mailer import send_mail
-from pydantic_settings import BaseSettings
 from typing import List
+from pydantic_settings import BaseSettings
+
 from .db import Base, engine, SessionLocal
 from .models import Citizen, Application, Status, AppType, Branch
 from .schemas import ApplicationCreate, ApplicationOut
 
 
+def parse_origins(raw: str) -> List[str]:
+    """
+    Accept JSON list (preferred) or comma-separated string.
+    """
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        if isinstance(v, list):
+            return v
+    except Exception:
+        pass
+    # fallback: comma-separated
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg://stratou:secret@db:5432/stratologia"
-    ALLOW_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:5174"]
+    # Read raw string; we’ll parse it ourselves
+    ALLOW_ORIGINS_RAW: str = '["http://localhost:5173","http://localhost:5174"]'
+
+    @property
+    def ALLOW_ORIGINS(self) -> List[str]:
+        return parse_origins(self.ALLOW_ORIGINS_RAW)
+
 
 settings = Settings()
 
 app = FastAPI()
+
+# CORS
+allowlist = settings.ALLOW_ORIGINS
+print("CORS allow_origins =", allowlist)  # shows up in `docker compose logs api`
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOW_ORIGINS,
+    allow_origins=allowlist,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Create tables on startup (simple for assignment)
+# DB schema
 Base.metadata.create_all(bind=engine)
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Optional: quick debug endpoint to inspect CORS at runtime
+@app.get("/_debug/cors")
+def debug_cors():
+    return {"allow_origins": allowlist}
+
 
 @app.post("/applications", response_model=ApplicationOut)
 def create_application(payload: ApplicationCreate):
@@ -65,12 +101,17 @@ def list_applications(status: Status | None = Query(None)):
         rows = q.order_by(Application.submitted_at.desc()).limit(100).all()
         return [
             {
-                "id": r.id, "status": r.status.value, "type": r.type.value,
-                "desired_branch": r.desired_branch.value, "citizen_id": r.citizen_id
+                "id": r.id,
+                "status": r.status.value,
+                "type": r.type.value,
+                "desired_branch": r.desired_branch.value,
+                "citizen_id": r.citizen_id,
             }
             for r in rows
         ]
-    finally: db.close()
+    finally:
+        db.close()
+
 
 @app.post("/applications/{app_id}/approve")
 def approve_application(app_id: int):
@@ -81,15 +122,16 @@ def approve_application(app_id: int):
             raise HTTPException(404, "Not found")
         app_row.status = Status.approved
         db.commit()
-        # fake recipient from national id for demo
         to = f"{app_row.citizen_id}@example.test"
         send_mail(
             to=to,
             subject=f"Application #{app_row.id} approved",
-            body=f"Your application {app_row.id} has been approved. Branch: {app_row.desired_branch.value}"
+            body=f"Your application {app_row.id} has been approved. Branch: {app_row.desired_branch.value}",
         )
         return {"id": app_row.id, "status": app_row.status.value}
-    finally: db.close()
+    finally:
+        db.close()
+
 
 @app.post("/applications/{app_id}/reject")
 def reject_application(app_id: int):
@@ -101,4 +143,5 @@ def reject_application(app_id: int):
         app_row.status = Status.rejected
         db.commit()
         return {"id": app_row.id, "status": app_row.status.value}
-    finally: db.close()
+    finally:
+        db.close()
