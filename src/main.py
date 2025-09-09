@@ -1,17 +1,18 @@
 # src/main.py
-import json, os
-from fastapi import FastAPI, HTTPException
+import json
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Query
-from typing import List
 from pydantic_settings import BaseSettings
 
 from .db import Base, engine, SessionLocal
 from .models import Citizen, Application, Status, AppType, Branch
 from .schemas import ApplicationCreate, ApplicationOut
+from .mailer import send_mail
 
 
-def parse_origins(raw: str) -> List[str]:
+def parse_origins(raw: Optional[str]) -> List[str]:
     """
     Accept JSON list (preferred) or comma-separated string.
     """
@@ -23,37 +24,28 @@ def parse_origins(raw: str) -> List[str]:
             return v
     except Exception:
         pass
-    # fallback: comma-separated
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+psycopg://stratou:secret@db:5432/stratologia"
-    # Read raw string; we’ll parse it ourselves
-    ALLOW_ORIGINS_RAW: str = '["http://localhost:5173","http://localhost:5174"]'
-
-    @property
-    def ALLOW_ORIGINS(self) -> List[str]:
-        return parse_origins(self.ALLOW_ORIGINS_RAW)
+    ALLOW_ORIGINS: List[str] = ["http://localhost:5173", "http://localhost:5174"]
+    ALLOW_ORIGINS_RAW: Optional[str] = None
 
 
 settings = Settings()
+origins = parse_origins(settings.ALLOW_ORIGINS_RAW) or settings.ALLOW_ORIGINS
 
 app = FastAPI()
-
-# CORS
-allowlist = settings.ALLOW_ORIGINS
-print("CORS allow_origins =", allowlist)  # shows up in `docker compose logs api`
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowlist,
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# DB schema
+# Create tables on startup (simple for assignment)
 Base.metadata.create_all(bind=engine)
 
 
@@ -62,10 +54,9 @@ def health():
     return {"status": "ok"}
 
 
-# Optional: quick debug endpoint to inspect CORS at runtime
 @app.get("/_debug/cors")
 def debug_cors():
-    return {"allow_origins": allowlist}
+    return {"allow_origins": origins}
 
 
 @app.post("/applications", response_model=ApplicationOut)
@@ -117,11 +108,12 @@ def list_applications(status: Status | None = Query(None)):
 def approve_application(app_id: int):
     db = SessionLocal()
     try:
-        app_row = db.query(Application).get(app_id)
+        app_row = db.get(Application, app_id)  # modern SQLAlchemy
         if not app_row:
             raise HTTPException(404, "Not found")
         app_row.status = Status.approved
         db.commit()
+
         to = f"{app_row.citizen_id}@example.test"
         send_mail(
             to=to,
@@ -137,7 +129,7 @@ def approve_application(app_id: int):
 def reject_application(app_id: int):
     db = SessionLocal()
     try:
-        app_row = db.query(Application).get(app_id)
+        app_row = db.get(Application, app_id)  # modern SQLAlchemy
         if not app_row:
             raise HTTPException(404, "Not found")
         app_row.status = Status.rejected
